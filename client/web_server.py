@@ -1,17 +1,14 @@
-from http.server import HTTPServer,BaseHTTPRequestHandler
-import sys
-import time
+from http.server import BaseHTTPRequestHandler
 import urllib.parse
 import datetime
 import email.utils
-import html
-import http.client
-import io
 import mimetypes
 import posixpath
 import os
 import socketserver
 from http import HTTPStatus
+from functools import partial
+import shutil
 
 class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
     server_version = "BitTunnel-HTTP/1.0"
@@ -23,13 +20,19 @@ class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
         '.jpg': 'image/jpeg',
     }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, directory = None,**kwargs):
+        if directory is None:
+            directory = os.getcwd()
+        self.directory = directory
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
         f = self.send_head()
         if f:
-            f.close()
+            try:
+                shutil.copyfileobj(f, self.wfile)
+            finally:
+                f.close()
     
     def do_POST(self):
         pass
@@ -49,26 +52,19 @@ class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
 
         try:
             fs = os.fstat(f.fileno())
-            # Use browser cache if possible
             if ("If-Modified-Since" in self.headers
                     and "If-None-Match" not in self.headers):
-                # compare If-Modified-Since and time of last file modification
                 try:
                     ims = email.utils.parsedate_to_datetime(
                         self.headers["If-Modified-Since"])
                 except (TypeError, IndexError, OverflowError, ValueError):
-                    # ignore ill-formed values
                     pass
                 else:
                     if ims.tzinfo is None:
-                        # obsolete format with no timezone, cf.
-                        # https://tools.ietf.org/html/rfc7231#section-7.1.1.1
                         ims = ims.replace(tzinfo=datetime.timezone.utc)
                     if ims.tzinfo is datetime.timezone.utc:
-                        # compare to UTC datetime of last modification
                         last_modif = datetime.datetime.fromtimestamp(
                             fs.st_mtime, datetime.timezone.utc)
-                        # remove microseconds, like in If-Modified-Since
                         last_modif = last_modif.replace(microsecond=0)
 
                         if last_modif <= ims:
@@ -101,10 +97,8 @@ class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
         return 'application/octet-stream'
 
     def translate_path(self, path):
-        # abandon query parameters
         path = path.split('?',1)[0]
         path = path.split('#',1)[0]
-        # Don't forget explicit trailing slash when normalizing. Issue17324
         trailing_slash = path.rstrip().endswith('/')
         try:
             path = urllib.parse.unquote(path, errors='surrogatepass')
@@ -113,20 +107,19 @@ class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
         path = posixpath.normpath(path)
         words = path.split('/')
         words = filter(None, words)
-        path = '/workspace/html/'
+        path = self.directory
         for word in words:
             if os.path.dirname(word) or word in (os.curdir, os.pardir):
-                # Ignore components that are not a simple file/directory name
                 continue
             path = os.path.join(path, word)
         if trailing_slash:
             path += '/'
         return path
-    
+
 if __name__  == '__main__':
     PORT = 8000
 
-    Handler = BitTunnelHTTPReqeustHandler
+    Handler = partial(BitTunnelHTTPReqeustHandler,directory = './dist')
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
         print("serving at port", PORT)
         httpd.serve_forever()

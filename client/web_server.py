@@ -35,6 +35,16 @@ class BitTunnelHTTPReqeustHandler(BaseHTTPRequestHandler):
                 f.close()
     
     def do_POST(self):
+        length = self.headers.get('content-length')
+        try:
+            nbytes = int(length)
+        except (TypeError, ValueError):
+            nbytes = 0
+        if nbytes > 0:
+            data = self.rfile.read(nbytes)
+        else:
+            data = None
+            
         pass
     
     def send_head(self):
@@ -120,6 +130,6 @@ if __name__  == '__main__':
     PORT = 8000
 
     Handler = partial(BitTunnelHTTPReqeustHandler,directory = './dist')
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+    with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
         print("serving at port", PORT)
         httpd.serve_forever()

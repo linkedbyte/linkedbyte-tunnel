@@ -1,8 +1,9 @@
 # coding: utf-8
 '''
-local_server <-------- xnat_client ---------> xnat_server
+local_server <-------- tunnel_client ---------> tunnel_server
 '''
 import logging
+import logging.handlers
 from selectors import DefaultSelector,EVENT_READ,EVENT_WRITE
 import socket
 from queue import Queue
@@ -20,17 +21,26 @@ from common.message import MessageType,decode_message,encode_message
 from common.exception import MessageError,ClientCloseError
 import time
 
-logging.basicConfig(format='%(levelname)s:%(module)s:%(lineno)d:%(funcName)s:%(asctime)s:%(message)s', level = logging.DEBUG)
+rotaing_file_handler = logging.handlers.RotatingFileHandler('linkedbyte_tunnel_client.log', maxBytes=100*1024, backupCount=100)
+rotaing_file_handler.setFormatter(logging.Formatter('%(levelname)s:%(module)s:%(lineno)d:%(funcName)s:%(asctime)s:%(message)s'))
+
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter('%(levelname)s:%(module)s:%(lineno)d:%(funcName)s:%(asctime)s:%(message)s'))
+
+logging.getLogger().setLevel(logging.DEBUG)
+logging.getLogger().addHandler(rotaing_file_handler)
+logging.getLogger().addHandler(stream_handler)
+
+g_app_exit = False
 
 def signal_handler(signum, frame):
     global g_app_exit
     g_app_exit = True
-    logging.info('bit-tunnel client exit!')
+    logging.info('linkedbyte-tunnel client exit!')
 
 signal.signal(signal.SIGINT, signal_handler)  
 signal.signal(signal.SIGTERM, signal_handler)
 
-g_app_exit = False
 
 BUFFER_LEN = 1024
 #每30秒发送一次keep alive
@@ -38,24 +48,24 @@ KEEP_ALIVE = 30
 #发送3次后没有收到回应则关闭链路
 KEEP_ALIVE_RETRY = 3
 
-DEFAULT_SERVER_IP = '127.0.0.1'
-DEFAULT_SERVER_PORT = 9177
+DEFAULT_SERVER_IP = '192.168.3.178'
+DEFAULT_SERVER_PORT = 6800
 DEFAULT_LOCAL_IP = '127.0.0.1'
 DEFAULT_LOCAL_PORT = 80
-DEFAULT_PROXY_PORT = 9807
+DEFAULT_PROXY_PORT = 7801
 DEFAULT_USERNAME = 'test'
 DEFAULT_PASSWORD = '12345678'
 
 class Config():
-    server_ip = '127.0.0.1'
-    server_port = 9177
-    local_ip = '127.0.0.1'
+    server_ip = ''
+    server_port = 6800
+    local_ip = ''
     #本地被代理服务端口
     local_port = 80
     #对外代理服务域名
     proxy_hostname = ''
     #对外代理服务端口
-    proxy_port = 9807
+    proxy_port = 7801
     ini_path = ''
     username = ''
     password = ''
@@ -63,30 +73,33 @@ class Config():
     @classmethod
     def parser(cls):
         cls.ini_path = os.path.dirname(os.path.realpath(__file__))
-        cls.ini_path = os.path.join(cls.ini_path,'config.ini')
+        cls.ini_path = os.path.join(cls.ini_path,'lbtc.ini')
         conf = configparser.ConfigParser()
         conf.read(cls.ini_path, encoding="utf-8")
 
         try:
             common_conf = conf['common']
-            http_conf = conf['http']
         except Exception as ex:
-            pass
+            logging.error('parser ini error!')
+            logging.error(ex)
         else:
             cls.server_ip = common_conf.get('server_ip',DEFAULT_SERVER_IP)
             cls.server_port = common_conf.getint('server_port',DEFAULT_SERVER_PORT)
             cls.username = common_conf.get('username',DEFAULT_USERNAME)
             cls.password = common_conf.get('password',DEFAULT_PASSWORD)
+        
+        try:
+            proxy_conf = conf['proxy']
+        except Exception as ex:
+            pass
+        else:
             cls.local_ip = http_conf.get('local_ip',DEFAULT_LOCAL_IP)
             cls.local_port = http_conf.getint('local_port',DEFAULT_LOCAL_PORT)
-            cls.proxy_hostname = http_conf.get('proxy_hostname')
+            cls.proxy_hostname = http_conf.get('proxy_domain')
             cls.proxy_port = http_conf.getint('proxy_port',DEFAULT_PROXY_PORT)
 
 #初始化配置
 Config.parser()
-
-class ProxyClientStatus(object):
-    pass
 
 class ProxyClient(object):
     def __init__(self,ip,port,select_handler):
@@ -386,7 +399,6 @@ class Selector(object):
                 self._proxy_client.recv()
                 self._proxy_client.send()
         except Exception as ex:
-            #重新发起连接
             self._proxy_client.dispose()
             self._proxy_client = None
 
